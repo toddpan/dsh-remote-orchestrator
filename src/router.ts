@@ -22,6 +22,7 @@ export class OrchestratorRouter {
   private sendJson(res: ServerResponse, statusCode: number, data: any): void {
     res.statusCode = statusCode
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-store')
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
@@ -75,6 +76,7 @@ export class OrchestratorRouter {
       const html = renderWebUi(`${prefix}/api`)
       res.statusCode = 200
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
       res.end(html)
       return true
     }
@@ -138,6 +140,70 @@ export class OrchestratorRouter {
       }
       const pingRes = await this.client.ping(tempAgent)
       this.sendJson(res, 200, { ok: true, data: pingRes })
+      return true
+    }
+
+    // 获取已保存节点的远程可用模型列表（含节点默认模型）
+    const modelsAgentMatch = /^\/api\/agents\/([^\/]+)\/models$/.exec(relPath)
+    if (modelsAgentMatch && method === 'GET') {
+      const agentId = decodeURIComponent(modelsAgentMatch[1])
+      const agent = this.store.getAgent(agentId)
+      if (!agent) {
+        this.sendJson(res, 404, { ok: false, error: 'Agent not found' })
+        return true
+      }
+      const modelsRes = await this.client.getModels(agent)
+      this.sendJson(res, 200, { ok: modelsRes.ok, data: modelsRes })
+      return true
+    }
+
+    // 表单快速拉取任意 URL 的可用模型列表（保存节点前即可预览选择）
+    if (relPath === '/api/models-test' && method === 'POST') {
+      const body = await this.parseBody(req)
+      if (!body.apiBaseUrl) {
+        this.sendJson(res, 400, { ok: false, error: '缺少 apiBaseUrl' })
+        return true
+      }
+      const tempAgent: any = {
+        id: 'temp',
+        name: 'temp',
+        apiBaseUrl: body.apiBaseUrl,
+        apiKey: body.apiKey,
+      }
+      const modelsRes = await this.client.getModels(tempAgent)
+      this.sendJson(res, 200, { ok: modelsRes.ok, data: modelsRes })
+      return true
+    }
+
+    // 获取已保存节点的远程可用 Agent Preset 列表
+    const presetsAgentMatch = /^\/api\/agents\/([^\/]+)\/presets$/.exec(relPath)
+    if (presetsAgentMatch && method === 'GET') {
+      const agentId = decodeURIComponent(presetsAgentMatch[1])
+      const agent = this.store.getAgent(agentId)
+      if (!agent) {
+        this.sendJson(res, 404, { ok: false, error: 'Agent not found' })
+        return true
+      }
+      const presetsRes = await this.client.getPresets(agent)
+      this.sendJson(res, 200, { ok: presetsRes.ok, data: presetsRes })
+      return true
+    }
+
+    // 表单快速拉取任意 URL 的可用 Agent Preset 列表（远端需 dsh-web-service >= 0.0.2）
+    if (relPath === '/api/presets-test' && method === 'POST') {
+      const body = await this.parseBody(req)
+      if (!body.apiBaseUrl) {
+        this.sendJson(res, 400, { ok: false, error: '缺少 apiBaseUrl' })
+        return true
+      }
+      const tempAgent: any = {
+        id: 'temp',
+        name: 'temp',
+        apiBaseUrl: body.apiBaseUrl,
+        apiKey: body.apiKey,
+      }
+      const presetsRes = await this.client.getPresets(tempAgent)
+      this.sendJson(res, 200, { ok: presetsRes.ok, data: presetsRes })
       return true
     }
 

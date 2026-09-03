@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-remote-orchestrator",
-  "version": "0.0.1",
+  "version": "0.0.7",
   "description": "DeepSeek Harness (DSH) 远程多智能体主子任务拆解派发与协同编排插件",
   "private": true,
   "repository": {

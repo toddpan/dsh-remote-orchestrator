@@ -203,25 +203,75 @@ export class TaskOrchestrator {
       return
     }
 
-    // 2. 发送提示词执行
+    // 2. 发送提示词执行（同步等待；超时或远端仍在跑时自动转轮询，长任务不再被误判失败）
     const execRes = await this.client.executePrompt(agent, remoteSessionId, subtask.prompt, {
       onLog: (msg, level) => {
         this.appendLog(taskId, subtaskId, level || 'info', msg)
       },
     })
 
-    if (!execRes.ok || !execRes.result) {
-      const err = execRes.error || '远程执行未返回结果'
+    let finalRes = execRes
+
+    const syncTimedOut = !execRes.ok && execRes.timedOut
+    if (syncTimedOut) {
+      this.appendLog(taskId, subtaskId, 'info', '转入轮询模式等待远端会话完成...')
+    } else if (execRes.ok) {
+      // 同步返回了，但若远端会话其实还在跑（远端超时窗口先到等场景），同样兜底等待
+      const st = await this.client.getSession(agent, remoteSessionId)
+      if (st.ok && st.status === 'running') {
+        this.appendLog(taskId, subtaskId, 'info', '远端会话仍在执行，转入轮询等待其完成...')
+        finalRes = { ok: false, error: 'pending-poll' }
+      }
+    }
+
+    if (syncTimedOut || (!finalRes.ok && finalRes.error === 'pending-poll')) {
+      const polled = await this.client.waitForSessionResult(agent, remoteSessionId, {
+        onLog: (msg, level) => {
+          this.appendLog(taskId, subtaskId, level || 'info', msg)
+        },
+      })
+      if (polled.ok) {
+        finalRes = {
+          ok: true,
+          result: { content: polled.content || '', reasoning: polled.reasoning, toolCalls: [] },
+        }
+        this.appendLog(
+          taskId,
+          subtaskId,
+          'info',
+          `远端会话已结束，从历史提取最终回答 ${(polled.content || '').length} 字符`
+        )
+      } else if (syncTimedOut) {
+        finalRes = { ok: false, error: polled.error || '等待远程会话完成失败' }
+      } else {
+        // 轮询失败但同步阶段已有内容，保留同步结果
+        finalRes = execRes
+      }
+    }
+
+    if (!finalRes.ok || !finalRes.result) {
+      const err = finalRes.error || '远程执行未返回结果'
       this.store.updateSubtask(taskId, subtaskId, (s) => {
         s.status = 'failed'
         s.error = err
         s.completedAt = Date.now()
       })
       this.appendLog(taskId, subtaskId, 'error', `子任务执行失败: ${err}`)
+    } else if (!finalRes.result.content || !finalRes.result.content.trim()) {
+      // 远端返回 ok 但 0 字符产出：绝大多数是该节点 LLM 静默失败（模型不可用/配置错误），不能算完成
+      const err =
+        '远程节点返回空回答 (0 字符)：该节点的 Provider/Model 很可能不可用或配置错误，请在「节点池」用「获取可用模型」重新选择并单项重试'
+      this.store.updateSubtask(taskId, subtaskId, (s) => {
+        s.status = 'failed'
+        s.error = err
+        s.result = finalRes.result
+        s.completedAt = Date.now()
+      })
+      this.appendLog(taskId, subtaskId, 'error', err)
     } else {
       this.store.updateSubtask(taskId, subtaskId, (s) => {
         s.status = 'completed'
-        s.result = execRes.result
+        s.result = finalRes.result
         s.completedAt = Date.now()
       })
       this.appendLog(taskId, subtaskId, 'info', `子任务已顺利完成，产出内容已就绪`)

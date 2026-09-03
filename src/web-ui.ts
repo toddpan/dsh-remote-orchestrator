@@ -747,7 +747,9 @@ export function renderWebUi(prefix: string): string {
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">模式 (Preset / Mode)</label>
-          <input type="text" id="agent-form-preset" class="form-control" value="cordis" placeholder="cordis / default">
+          <div id="preset-field-container">
+            <input type="text" id="agent-form-preset" class="form-control" value="cordis" placeholder="cordis / default">
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">运行权限 (Permission)</label>
@@ -762,11 +764,22 @@ export function renderWebUi(prefix: string): string {
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">模型提供方 (Provider)</label>
-          <input type="text" id="agent-form-provider" class="form-control" placeholder="例如 deepseek">
+          <div id="provider-field-container">
+            <input type="text" id="agent-form-provider" class="form-control" placeholder="留空则用节点默认模型" oninput="refreshModelOptions()">
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">指定模型名称 (Model)</label>
-          <input type="text" id="agent-form-model" class="form-control" placeholder="例如 deepseek-chat">
+          <div id="model-field-container">
+            <input type="text" id="agent-form-model" class="form-control" placeholder="留空则用节点默认模型">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-sm" onclick="loadFormModels(false, true)">⤓ 获取该节点可用模型/预设</button>
+          <span id="agent-models-result" style="font-size: 11px; color: var(--text-secondary);">可从远程节点拉取可用模型与 Agent 预设，避免手填导致执行失败</span>
         </div>
       </div>
 
@@ -923,6 +936,11 @@ export function renderWebUi(prefix: string): string {
         document.getElementById('agent-form-model').value = '';
         document.getElementById('agent-form-prompt').value = '你是受主编排器指派的专业子任务执行智能体。';
       }
+      // 打开弹窗即自动拉取该地址的可用模型（静默，命中缓存则直接应用）
+      const modelsHint = document.getElementById('agent-models-result');
+      modelsHint.style.color = 'var(--text-secondary)';
+      modelsHint.textContent = '正在拉取可用模型...';
+      loadFormModels(true);
     }
 
     function editAgent(agentId) {
@@ -944,10 +962,164 @@ export function renderWebUi(prefix: string): string {
       if (res.ok && res.data?.ok) {
         el.style.color = 'var(--success)';
         el.textContent = '✓ 连通成功: ' + (res.data.name || 'DSH Web API') + ' (v' + (res.data.version || '1.0') + ')';
+        loadFormModels(true); // 连通成功后静默拉取可用模型
       } else {
         el.style.color = 'var(--error)';
         el.textContent = '✗ 无法连接: ' + (res.data?.error || res.error || '请求失败');
       }
+    }
+
+    // ---- 远程可用模型/预设拉取与选择 ----
+    let gFormModels = null; // { url, key, at, models, defaultModel, presets, presetsOk }
+    const MODELS_CACHE_TTL = 60000; // 缓存 60 秒，过期自动重新拉取
+
+    async function loadFormModels(silent = false, force = false) {
+      const url = document.getElementById('agent-form-api').value.trim();
+      const key = document.getElementById('agent-form-key').value.trim();
+      const el = document.getElementById('agent-models-result');
+      if (!url) {
+        el.style.color = 'var(--error)';
+        el.textContent = '请先填写远程 API 访问地址';
+        return;
+      }
+      // 缓存命中（未强制刷新且未超时）则直接应用
+      const cacheFresh = gFormModels && gFormModels.url === url && gFormModels.key === key
+        && gFormModels.models && (Date.now() - (gFormModels.at || 0) < MODELS_CACHE_TTL);
+      if (!force && cacheFresh) {
+        applyFormModels(gFormModels);
+        return;
+      }
+      if (!silent) {
+        el.style.color = 'var(--text-secondary)';
+        el.textContent = '正在拉取可用模型/预设...';
+      }
+      const [res, presRes] = await Promise.all([
+        apiReq('/models-test', 'POST', { apiBaseUrl: url, apiKey: key }),
+        apiReq('/presets-test', 'POST', { apiBaseUrl: url, apiKey: key }),
+      ]);
+      if (res.ok && res.data?.ok) {
+        gFormModels = {
+          url,
+          key,
+          at: Date.now(),
+          models: res.data.models || [],
+          defaultModel: res.data.defaultModel,
+          presets: (presRes.ok && presRes.data?.ok) ? (presRes.data.presets || []) : [],
+          presetsOk: !!(presRes.ok && presRes.data?.ok),
+        };
+        applyFormModels(gFormModels);
+      } else {
+        el.style.color = 'var(--error)';
+        el.textContent = '✗ 拉取模型失败: ' + (res.data?.error || res.error || '请求失败（远端可能未安装 dsh-web-service 或版本过旧）');
+      }
+    }
+
+    // 将文本输入动态升级为可见的 <select> 下拉（保留元素 id，兼容既有读写逻辑）
+    function setFieldOptions(inputId, containerId, options, selectedValue, emptyLabel) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      let el = document.getElementById(inputId);
+      // 无可选项时保持文本输入（远端不支持拉取的降级场景）
+      if (!options || !options.length) return;
+      if (!el || el.tagName !== 'SELECT') {
+        const sel = document.createElement('select');
+        sel.id = inputId;
+        sel.className = 'form-control';
+        sel.oninput = function () { refreshModelOptions(); };
+        sel.onchange = function () { refreshModelOptions(); };
+        container.replaceChild(sel, el);
+        el = sel;
+      }
+      const cur = (selectedValue !== undefined && selectedValue !== null) ? String(selectedValue) : (el.value || '');
+      el.innerHTML = '';
+      let hasCur = false;
+      if (emptyLabel !== null && emptyLabel !== undefined) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = emptyLabel;
+        el.appendChild(o);
+        if (cur === '') hasCur = true;
+      }
+      for (const opt of options) {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        el.appendChild(o);
+        if (opt.value === cur) hasCur = true;
+      }
+      if (cur && !hasCur) {
+        const o = document.createElement('option');
+        o.value = cur;
+        o.textContent = cur + '（自定义）';
+        el.appendChild(o);
+      }
+      el.value = cur;
+    }
+
+    function applyFormModels(m) {
+      const el = document.getElementById('agent-models-result');
+      const provEl = document.getElementById('agent-form-provider');
+      const providers = [];
+      const seenProv = new Set();
+      for (const x of m.models) {
+        if (x.provider && !seenProv.has(x.provider)) { seenProv.add(x.provider); providers.push(x.provider); }
+      }
+      const dm = m.defaultModel;
+      const provOptions = providers.map(function (p) {
+        return { value: p, label: p + (dm && dm.provider === p ? '（节点默认）' : '') };
+      });
+      setFieldOptions('agent-form-provider', 'provider-field-container', provOptions, provEl.value, '（节点默认提供方）');
+      refreshModelOptions();
+      const dmText = (dm && dm.provider) ? '；节点默认模型: ' + dm.provider + ' / ' + (dm.model || 'default') : '';
+      const curProv = document.getElementById('agent-form-provider').value.trim();
+      const willFill = !curProv && dm && dm.provider;
+      el.style.color = 'var(--success)';
+      el.textContent = '✓ 拉取到 ' + m.models.length + ' 个可选模型（' + providers.length + ' 个提供方）' + dmText + describePresets(m.presets || [], m.presetsOk) + (willFill ? '（已自动填充默认模型）' : '');
+      // 未指定模型时自动填充该节点默认模型，避免依赖猜测
+      if (willFill) {
+        document.getElementById('agent-form-provider').value = dm.provider;
+        document.getElementById('agent-form-model').value = dm.model || '';
+        refreshModelOptions();
+      }
+      applyFormPresets(m.presets || [], m.presetsOk, document.getElementById('agent-form-preset').value);
+    }
+
+    function describePresets(presets, presetsOk) {
+      if (!presetsOk) return '；远端未提供预设列表 (需 dsh-web-service >= 0.0.2)，可手动填写';
+      if (!presets.length) return '；远端无可用预设';
+      const dflt = presets.find(function (p) { return p.isDefault; });
+      let text = '；预设 ' + presets.length + ' 个' + (dflt ? '（默认 ' + dflt.id + '）' : '');
+      const cur = document.getElementById('agent-form-preset').value.trim();
+      if (cur && !presets.some(function (p) { return p.id === cur; })) {
+        text += '，⚠ 当前填写 "' + cur + '" 不在节点可用列表';
+      }
+      return text;
+    }
+
+    function refreshModelOptions() {
+      if (!gFormModels) return;
+      const prov = document.getElementById('agent-form-provider').value.trim();
+      const modelEl = document.getElementById('agent-form-model');
+      if (!prov) {
+        // 未选提供方 = 使用节点默认，模型框只保留默认项
+        setFieldOptions('agent-form-model', 'model-field-container',
+          [{ value: '', label: '（节点默认模型）' }], modelEl.value, null);
+        return;
+      }
+      const entries = (gFormModels.models || []).filter(function (x) { return x.provider === prov; });
+      const opts = entries.map(function (x) {
+        const mid = x.id || x.name;
+        return { value: mid, label: mid + (x.isDefault ? '（默认）' : '') };
+      });
+      setFieldOptions('agent-form-model', 'model-field-container', opts, modelEl.value, '（该提供方默认模型）');
+    }
+
+    function applyFormPresets(presets, presetsOk, selectedValue) {
+      if (!presetsOk || !presets || !presets.length) return; // 拉取失败则保持文本输入
+      const opts = presets.map(function (p) {
+        return { value: p.id, label: p.id + (p.isDefault ? '（默认）' : '') };
+      });
+      setFieldOptions('agent-form-preset', 'preset-field-container', opts, selectedValue, null);
     }
 
     async function saveAgentForm() {
@@ -1148,21 +1320,44 @@ export function renderWebUi(prefix: string): string {
 
       msgBox.innerHTML = messages.map(m => {
         const isUser = m.role === 'user';
+        const raw = m.content || '';
+        // 上下文注入消息（AGENTS.md / 运行时上下文 / skills 等）不算用户指令
+        const isInjection = isUser && /^(<system-reminder>|Current runtime context|The following workspace instructions)/.test(raw.trim());
+        const kindLabel = isInjection ? '📦 上下文注入（系统自动附加）' : (isUser ? '👤 发送指令' : '🤖 远程智能体响应');
         let html = '';
         if (m.reasoning) {
           html += \`<div class="chat-reasoning"><strong style="color:var(--accent);">💭 深度思考过程:</strong><br>\${escapeHtml(m.reasoning)}</div>\`;
         }
-        html += \`<div>\${escapeHtml(m.content || '')}</div>\`;
+        // 长消息默认折叠，避免上下文注入刷屏
+        const CLAMP_LEN = 800;
+        if (raw.length > CLAMP_LEN) {
+          html += \`<div class="chat-clamp">\${escapeHtml(raw.slice(0, CLAMP_LEN))}<span style="color:var(--text-muted);"> …[内容过长已折叠，共 \${raw.length} 字符]</span></div>\`;
+          html += \`<div class="chat-full" style="display:none;">\${escapeHtml(raw)}</div>\`;
+          html += '<button class="btn btn-sm" style="margin-top:6px;" onclick="toggleChatCollapse(this)">⤢ 展开全文</button>';
+        } else {
+          html += \`<div>\${escapeHtml(raw)}</div>\`;
+        }
 
         return \`
-          <div class="chat-bubble \${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}">
-            <div style="font-size:10px; margin-bottom:4px; opacity:0.8;">\${isUser ? '👤 发送指令' : '🤖 远程智能体响应'}</div>
+          <div class="chat-bubble \${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}" \${isInjection ? 'style="opacity:0.72;"' : ''}>
+            <div style="font-size:10px; margin-bottom:4px; opacity:0.8;">\${kindLabel}</div>
             \${html}
           </div>
         \`;
       }).join('');
 
       msgBox.scrollTop = msgBox.scrollHeight;
+    }
+
+    function toggleChatCollapse(btn) {
+      const bubble = btn.parentElement;
+      const clamp = bubble.querySelector('.chat-clamp');
+      const full = bubble.querySelector('.chat-full');
+      if (!clamp || !full) return;
+      const expanded = full.style.display !== 'none';
+      full.style.display = expanded ? 'none' : 'block';
+      clamp.style.display = expanded ? 'block' : 'none';
+      btn.textContent = expanded ? '⤢ 展开全文' : '⌃ 收起';
     }
 
     async function sendFollowupMessage() {

@@ -65,6 +65,10 @@
 - `DELETE /dsh-orchestrator/api/agents/:id`：删除指定的远程 DSH 智能体
 - `POST /dsh-orchestrator/api/agents/:id/ping`：测试指定远程节点的连通性
 - `POST /dsh-orchestrator/api/ping-test`：快速测试任意 URL 的 DSH API 连通性
+- `GET /dsh-orchestrator/api/agents/:id/models`：获取指定节点远程可用模型列表（含节点默认模型）
+- `POST /dsh-orchestrator/api/models-test`：按表单 URL 快速拉取任意 DSH 节点的可用模型列表（保存前预览）
+- `GET /dsh-orchestrator/api/agents/:id/presets`：获取指定节点远程可用 Agent Preset 列表
+- `POST /dsh-orchestrator/api/presets-test`：按表单 URL 快速拉取任意 DSH 节点的可用 Agent Preset 列表（远端需 dsh-web-service >= 0.0.2）
 - `GET /dsh-orchestrator/api/tasks`：查询主任务列表与各子任务状态
 - `POST /dsh-orchestrator/api/tasks`：创建并分发新的主任务
 - `GET /dsh-orchestrator/api/tasks/:id`：查询指定主任务详情与日志
