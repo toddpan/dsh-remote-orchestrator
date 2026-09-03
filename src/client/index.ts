@@ -11,7 +11,7 @@
  * dsh-panel-activate，点击侧栏会话行时自动交还中央列。
  */
 
-export const inject = ['slots']
+export const inject = ['slots', 'locale']
 
 import React from 'react'
 
