@@ -428,10 +428,9 @@ export function apply(ctx: OrchContext): void {
   ctx.effect(
     () =>
       ctx.slots.inject('sidebar.footer.action', () => {
-        const unregister = ctx.slots.register(
-          { name: 'sidebar.footer.action', id: 'dsh-remote-orchestrator', order: 120 },
-          FooterOrchestratorEntry,
-        )
+        // NOTE: `{ name: ... }` 必须与 register( 同行内联——注入器骨架校验
+        // 用 register\(\{ 前缀正则匹配 slot 名，换行会导致重启恢复被跳过。
+        const unregister = ctx.slots.register({ name: 'sidebar.footer.action', id: 'dsh-remote-orchestrator', order: 120 }, FooterOrchestratorEntry)
         return () => {
           unregister()
         }
