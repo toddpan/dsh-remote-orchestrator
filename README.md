@@ -3,7 +3,7 @@
 > **DeepSeek Harness (DSH) 分布式多智能体协同编排插件**  
 > 结合 `dsh-web-service`，实现主任务拆解、多远程 DSH 并发派发执行、实时工作日志与聊天窗口追问、远程子智能体配置池管理，以及主任务完成状态评估与总结报告生成。
 
-[![GitHub repo](https://img.shields.io/badge/GitHub-toddpan%2Fdsh--orchestrator-blue?logo=github)](https://github.com/toddpan/dsh-orchestrator)
+[![GitHub repo](https://img.shields.io/badge/GitHub-toddpan%2Fdsh--remote--orchestrator-blue?logo=github)](https://github.com/toddpan/dsh-remote-orchestrator)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 [![Cordis](https://img.shields.io/badge/Cordis-v4-orange.svg)](https://cordis.moe)
 
@@ -75,12 +75,50 @@
 
 ---
 
+## 🧠 AI SKILL：让智能体学会编排
+
+仓库自带 DSH 原生 SKILL（`skills/dsh-orchestrator/SKILL.md`），安装后 AI 智能体自动掌握 5 个编排工具与 REST API 的完整用法（多机协同、任务拆解派发、进度监控、远程追问、总结报告）。
+
+### 一键在线安装（SKILL，任何机器）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-remote-orchestrator/main/scripts/install.sh | bash
+```
+
+### 一键在线安装（SKILL + 插件，装了 DSH 的机器）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-remote-orchestrator/main/scripts/install.sh | bash -s -- --all
+```
+
+`--all` 行为：优先从 GitHub Release 下载插件 tgz 并尝试 `dsh plugin --profile web add` 装配（重启 dsh web 生效）；失败则回退源码 clone + 构建，并给出 `dev_inject_plugin` 注入指引。SKILL 部分始终安装到 `~/.dsh/skills/dsh-orchestrator/`。
+
+### 更多用法
+
+```bash
+# 仅安装插件（不装 SKILL）
+curl -fsSL .../install.sh | bash -s -- --plugin
+
+# SKILL 安装到指定目录（项目级 .dsh/skills 或 .agents/skills）
+curl -fsSL .../install.sh | bash -s -- --dir /path/to/project/.dsh/skills
+
+# 指定分支 / 仓库
+curl -fsSL .../install.sh | bash -s -- --branch dev
+
+# 卸载（SKILL + 插件一起卸）
+curl -fsSL .../install.sh | bash -s -- uninstall
+```
+
+SKILL 会话内也可用 `/dsh-orchestrator` 直接调用。本地安装：`bash scripts/install.sh`。
+
+---
+
 ## 🚀 安装、构建与注入
 
 ### 1. 克隆代码
 ```bash
-git clone https://github.com/toddpan/dsh-orchestrator.git
-cd dsh-orchestrator
+git clone https://github.com/toddpan/dsh-remote-orchestrator.git
+cd dsh-remote-orchestrator
 ```
 
 ### 2. 编译构建
@@ -91,7 +129,7 @@ bash scripts/build.sh
 ### 3. 在 DSH 中热注入
 使用 `dsh-super-injector` 提供的运行时注入工具：
 ```bash
-dev_inject_plugin {"dir": "/path/to/dsh-orchestrator"}
+dev_inject_plugin {"dir": "/path/to/dsh-remote-orchestrator"}
 ```
 
 ### 4. 打开控制台

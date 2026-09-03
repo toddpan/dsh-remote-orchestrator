@@ -7,10 +7,10 @@
 #   2) dsh-orchestrator SKILL（让 AI 智能体掌握编排用法，默认安装）
 #
 # 一键安装 SKILL（任何机器）：
-#   curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-orchestrator/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-remote-orchestrator/main/scripts/install.sh | bash
 #
 # 一键安装 SKILL + 插件（在装了 DSH 的机器上）：
-#   curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-orchestrator/main/scripts/install.sh | bash -s -- --all
+#   curl -fsSL https://raw.githubusercontent.com/toddpan/dsh-remote-orchestrator/main/scripts/install.sh | bash -s -- --all
 #
 # 仅安装插件：
 #   curl -fsSL ... | bash -s -- --plugin
@@ -23,7 +23,7 @@
 # =============================================================================
 set -euo pipefail
 
-REPO="toddpan/dsh-orchestrator"
+REPO="toddpan/dsh-remote-orchestrator"
 BRANCH="${DSH_ORCHESTRATOR_BRANCH:-main}"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 PLUGIN_NAME="@dsh-external/dsh-remote-orchestrator"
