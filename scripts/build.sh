@@ -55,6 +55,26 @@ link_pkg @deepseek-ai/dsh-client-ui-slots packages/client/ui-slots
 # @types/node（编译类型；checkout 自带）
 link_pkg @types/node node_modules/@types/node
 
+# ssh2（SSH 连接资源 test/exec 的运行时依赖；已声明在 package.json dependencies）
+# 构建期链接：优先 profile node_modules，其次 checkout node_modules；都没有则跳过（运行时降级 TCP 探测）
+if [ ! -e node_modules/ssh2 ]; then
+  SSH2_SRC=""
+  for candidate in "${DSH_HOME:-$HOME/.dsh}/profiles/web/node_modules/ssh2" "$CHECKOUT/node_modules/ssh2" "$CHECKOUT"/node_modules/.pnpm/ssh2@*/node_modules/ssh2; do
+    if [ -d "$candidate" ]; then SSH2_SRC="$candidate"; break; fi
+  done
+  if [ -n "$SSH2_SRC" ]; then
+    node -e "
+      const fs = require('fs');
+      const path = require('path');
+      fs.mkdirSync('node_modules', { recursive: true });
+      fs.symlinkSync(path.resolve(process.argv[1]), path.resolve('node_modules/ssh2'), process.platform === 'win32' ? 'junction' : 'dir');
+    " "$SSH2_SRC"
+    echo "=== ssh2 linked from $SSH2_SRC ==="
+  else
+    echo "=== ssh2 not found (test/exec 将降级为 TCP 探测) ==="
+  fi
+fi
+
 STD_SCHEMA=$(find "$CHECKOUT/node_modules/.pnpm" -maxdepth 1 -type d -iname '@standard-schema+spec@*' 2>/dev/null | head -1)
 if [ -n "$STD_SCHEMA" ]; then
   node -e "

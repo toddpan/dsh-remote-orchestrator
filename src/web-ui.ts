@@ -613,6 +613,7 @@ export function renderWebUi(prefix: string): string {
       <button class="tab-btn active" onclick="switchTab('tasks')">任务调度大厅</button>
       <button class="tab-btn" onclick="switchTab('dispatch')">+ 新建主任务</button>
       <button class="tab-btn" onclick="switchTab('agents')">子智能体管理 (远程 DSH)</button>
+      <button class="tab-btn" onclick="switchTab('ssh')">SSH 连接资源</button>
     </nav>
 
     <div class="status-badge-top">
@@ -675,6 +676,18 @@ export function renderWebUi(prefix: string): string {
           <button class="btn btn-primary btn-sm" onclick="openAgentModal()">+ 添加远程 DSH 节点</button>
         </div>
         <div id="agents-grid-container" class="agent-grid">加载中...</div>
+      </section>
+
+      <!-- Tab 4: SSH Connection Resources -->
+      <section id="tab-ssh" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+          <div>
+            <h2 style="font-size: 18px; font-weight: 700;">SSH 连接资源管理</h2>
+            <div style="font-size: 12px; color: var(--text-secondary);">记录可连接的 SSH 账号与凭据（密码 / 私钥），按连接方式 + 主机 IP 组织；AI 可通过 dsh_ssh_resource_manage 工具查询凭据或直接远程执行命令</div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openSshModal()">+ 添加 SSH 连接资源</button>
+        </div>
+        <div id="ssh-grid-container" class="agent-grid">加载中...</div>
       </section>
     </div>
   </main>
@@ -797,6 +810,71 @@ export function renderWebUi(prefix: string): string {
 
   <div id="toast"></div>
 
+  <!-- Modal: Add / Edit SSH Resource -->
+  <div id="ssh-modal-overlay" class="modal-overlay">
+    <div class="modal">
+      <h3 id="ssh-modal-title" style="font-size: 16px; font-weight: 700; margin-bottom: 16px;">配置 SSH 连接资源</h3>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">资源 ID *（留空自动生成）</label>
+          <input type="text" id="ssh-form-id" class="form-control" placeholder="如 brain-server">
+        </div>
+        <div class="form-group">
+          <label class="form-label">资源名称 *</label>
+          <input type="text" id="ssh-form-name" class="form-control" placeholder="如 Brain 远程服务器">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">连接 IP / 主机名 *</label>
+          <input type="text" id="ssh-form-host" class="form-control" placeholder="如 106.12.157.35">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH 端口</label>
+          <input type="number" id="ssh-form-port" class="form-control" value="22" placeholder="22">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">登录账号 (Username) *</label>
+          <input type="text" id="ssh-form-username" class="form-control" placeholder="如 root">
+        </div>
+        <div class="form-group">
+          <label class="form-label">连接方式 (认证方式) *</label>
+          <select id="ssh-form-authtype" class="form-control" onchange="toggleSshAuthFields()">
+            <option value="password">password (账号密码)</option>
+            <option value="key">key (私钥密钥)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group" id="ssh-password-group">
+        <label class="form-label">登录密码 *</label>
+        <input type="password" id="ssh-form-password" class="form-control" placeholder="SSH 登录密码">
+      </div>
+
+      <div class="form-group" id="ssh-key-group" style="display: none;">
+        <label class="form-label">私钥 (PEM 内容) *</label>
+        <textarea id="ssh-form-privatekey" class="form-control" rows="5" style="font-family: monospace; font-size: 11px;" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+        <label class="form-label" style="margin-top: 10px;">私钥口令 (可选)</label>
+        <input type="password" id="ssh-form-passphrase" class="form-control" placeholder="若私钥设有口令则填写">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">备注说明 (可选)</label>
+        <input type="text" id="ssh-form-description" class="form-control" placeholder="如 oneNat 隧道 42005 -> 本机 22">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn" onclick="closeSshModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveSshForm()">保存资源</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const API_PREFIX = '${prefix}';
     let gAgents = [];
@@ -820,9 +898,11 @@ export function renderWebUi(prefix: string): string {
       document.getElementById('tab-tasks').style.display = name === 'tasks' ? 'block' : 'none';
       document.getElementById('tab-dispatch').style.display = name === 'dispatch' ? 'block' : 'none';
       document.getElementById('tab-agents').style.display = name === 'agents' ? 'block' : 'none';
+      document.getElementById('tab-ssh').style.display = name === 'ssh' ? 'block' : 'none';
 
       if (name === 'tasks') loadTasks();
       if (name === 'agents') loadAgents();
+      if (name === 'ssh') loadSshResources();
     }
 
     // ---- API Requests ----
@@ -905,6 +985,153 @@ export function renderWebUi(prefix: string): string {
       if (res.ok) {
         showToast('已删除节点');
         loadAgents();
+      }
+    }
+
+    // ---- SSH Connection Resources Management ----
+    let gSshResources = [];
+    let gSshEditingId = null;
+
+    async function loadSshResources() {
+      const res = await apiReq('/ssh-resources');
+      if (res.ok) {
+        gSshResources = res.data || [];
+        renderSshResources();
+      }
+    }
+
+    function renderSshResources() {
+      const container = document.getElementById('ssh-grid-container');
+      if (gSshResources.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted); grid-column:1/-1;">暂未记录 SSH 连接资源，请点击上方按钮添加（账号密码或私钥均可）。</div>';
+        return;
+      }
+      container.innerHTML = gSshResources.map(r => {
+        const testBadge = r.lastTestOk === true
+          ? '<span class="badge badge-completed">✓ 已验证</span>'
+          : r.lastTestOk === false
+            ? '<span class="badge badge-failed">✗ 上次失败</span>'
+            : '<span class="badge badge-running">未测试</span>';
+        const authBadge = r.authType === 'key' ? '🔑 私钥' : '🔒 密码';
+        return \`
+        <div class="agent-card">
+          <div class="agent-card-title">
+            <span>\${escapeHtml(r.name)}</span>
+            <span class="badge badge-completed">\${escapeHtml(r.authType)}</span>
+          </div>
+          <div class="agent-detail-row">
+            <span class="k">连接地址:</span>
+            <span class="v" style="color:var(--primary); font-family:monospace;">\${escapeHtml(r.username)}@\${escapeHtml(r.host)}:\${r.port}</span>
+          </div>
+          <div class="agent-detail-row">
+            <span class="k">认证方式:</span>
+            <span class="v">\${authBadge}\${r.authType === 'key' && r.hasPassphrase ? ' (含口令)' : ''}</span>
+          </div>
+          <div class="agent-detail-row">
+            <span class="k">状态:</span>
+            <span class="v">\${testBadge}\${r.lastTestError ? ' <span style="color:var(--text-muted);font-size:11px;">' + escapeHtml(String(r.lastTestError).slice(0, 60)) + '</span>' : ''}</span>
+          </div>
+          \${r.description ? \`
+          <div class="agent-detail-row">
+            <span class="k">备注:</span>
+            <span class="v" style="font-size:11px; color:var(--text-muted);">\${escapeHtml(r.description)}</span>
+          </div>\` : ''}
+          <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px; border-top:1px dashed var(--border-color); padding-top:10px;">
+            <button class="btn btn-sm" onclick="testSsh('\${r.id}')">⚡ 连接测试</button>
+            <button class="btn btn-sm" onclick="editSsh('\${r.id}')">编辑</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteSsh('\${r.id}')">删除</button>
+          </div>
+        </div>\`;
+      }).join('');
+    }
+
+    function toggleSshAuthFields() {
+      const isKey = document.getElementById('ssh-form-authtype').value === 'key';
+      document.getElementById('ssh-password-group').style.display = isKey ? 'none' : 'block';
+      document.getElementById('ssh-key-group').style.display = isKey ? 'block' : 'none';
+    }
+
+    function openSshModal() {
+      gSshEditingId = null;
+      document.getElementById('ssh-modal-title').textContent = '配置 SSH 连接资源';
+      ['ssh-form-id','ssh-form-name','ssh-form-host','ssh-form-username','ssh-form-password','ssh-form-privatekey','ssh-form-passphrase','ssh-form-description'].forEach(id => { document.getElementById(id).value = ''; });
+      document.getElementById('ssh-form-id').readOnly = false;
+      document.getElementById('ssh-form-port').value = '22';
+      document.getElementById('ssh-form-authtype').value = 'password';
+      toggleSshAuthFields();
+      document.getElementById('ssh-modal-overlay').classList.add('active');
+    }
+
+    function closeSshModal() {
+      document.getElementById('ssh-modal-overlay').classList.remove('active');
+    }
+
+    async function editSsh(id) {
+      const res = await apiReq('/ssh-resources/' + encodeURIComponent(id));
+      if (!res.ok) { showToast('读取 SSH 资源失败'); return; }
+      const r = res.data;
+      gSshEditingId = r.id;
+      document.getElementById('ssh-modal-title').textContent = '编辑 SSH 连接资源';
+      document.getElementById('ssh-form-id').value = r.id;
+      document.getElementById('ssh-form-id').readOnly = true;
+      document.getElementById('ssh-form-name').value = r.name || '';
+      document.getElementById('ssh-form-host').value = r.host || '';
+      document.getElementById('ssh-form-port').value = r.port || 22;
+      document.getElementById('ssh-form-username').value = r.username || '';
+      document.getElementById('ssh-form-authtype').value = r.authType || 'password';
+      document.getElementById('ssh-form-password').value = r.password || '';
+      document.getElementById('ssh-form-privatekey').value = r.privateKey || '';
+      document.getElementById('ssh-form-passphrase').value = r.passphrase || '';
+      document.getElementById('ssh-form-description').value = r.description || '';
+      toggleSshAuthFields();
+      document.getElementById('ssh-modal-overlay').classList.add('active');
+    }
+
+    async function saveSshForm() {
+      const body = {
+        id: document.getElementById('ssh-form-id').value.trim() || undefined,
+        name: document.getElementById('ssh-form-name').value.trim(),
+        host: document.getElementById('ssh-form-host').value.trim(),
+        port: Number(document.getElementById('ssh-form-port').value) || 22,
+        username: document.getElementById('ssh-form-username').value.trim(),
+        authType: document.getElementById('ssh-form-authtype').value,
+        password: document.getElementById('ssh-form-password').value || undefined,
+        privateKey: document.getElementById('ssh-form-privatekey').value || undefined,
+        passphrase: document.getElementById('ssh-form-passphrase').value || undefined,
+        description: document.getElementById('ssh-form-description').value.trim() || undefined,
+      };
+      if (!body.name || !body.host || !body.username) { showToast('请填写名称、连接 IP 与登录账号'); return; }
+      if (gSshEditingId) body.id = gSshEditingId;
+      const res = await apiReq('/ssh-resources', 'POST', body);
+      if (res.ok) {
+        showToast('✓ SSH 连接资源已保存');
+        closeSshModal();
+        loadSshResources();
+      } else {
+        showToast('✗ 保存失败: ' + (res.error || '未知错误'));
+      }
+    }
+
+    async function deleteSsh(id) {
+      if (!confirm('确定删除该 SSH 连接资源吗？')) return;
+      const res = await apiReq('/ssh-resources/' + encodeURIComponent(id), 'DELETE');
+      if (res.ok) {
+        showToast('已删除 SSH 资源');
+        loadSshResources();
+      }
+    }
+
+    async function testSsh(id) {
+      showToast('正在发起 SSH 连接测试...');
+      const res = await apiReq('/ssh-resources/' + encodeURIComponent(id) + '/test', 'POST', {});
+      if (res.ok && res.data) {
+        const t = res.data;
+        if (t.ok && t.authOk) showToast('✓ SSH 认证成功! ' + t.username + '@' + t.host + ':' + t.port);
+        else if (t.ok && t.degraded) showToast('△ 端口可达（缺少 ssh2 依赖，未做认证验证）');
+        else showToast('✗ 连接失败: ' + (t.error || '未知错误'));
+        renderSshResources();
+      } else {
+        showToast('✗ 测试请求失败: ' + (res.error || '未知错误'));
       }
     }
 

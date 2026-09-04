@@ -5,13 +5,17 @@
 import type { Context } from 'cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { OrchestratorStore } from './store.js'
+import type { SshResourceStore } from './ssh-store.js'
 import type { TaskOrchestrator } from './orchestrator.js'
 import { RemoteDshClient } from './remote-client.js'
+import { SshInputError, execOnSshResource, maskSshResource, normalizeSshResource, testSshResource } from './ssh-resources.js'
+import type { SshResource } from './types.js'
 
 export function registerOrchestratorTools(
   ctx: Context,
   store: OrchestratorStore,
   orchestrator: TaskOrchestrator,
+  sshStore: SshResourceStore,
   config: { pathPrefix?: string; port?: number }
 ): void {
   const client = new RemoteDshClient()
@@ -65,10 +69,12 @@ export function registerOrchestratorTools(
             }
 
             if (action === 'upsert') {
-              if (!args.agent || !args.agent.id || !args.agent.name || !args.agent.apiBaseUrl) {
+              // 兼容 harness 传参差异：agent 可能是对象，也可能是 JSON 字符串
+              const agent: any = typeof args.agent === 'string' ? JSON.parse(args.agent) : args.agent
+              if (!agent || !agent.id || !agent.name || !agent.apiBaseUrl) {
                 return JSON.stringify({ ok: false, error: '缺少必填字段 id, name, apiBaseUrl' })
               }
-              const saved = store.upsertAgent(args.agent)
+              const saved = store.upsertAgent(agent)
               return JSON.stringify({ ok: true, message: '远程智能体配置已保存', agent: saved }, null, 2)
             }
 
@@ -125,10 +131,13 @@ export function registerOrchestratorTools(
               return JSON.stringify({ ok: false, error: '缺少主任务目标 objective' })
             }
             try {
+              // 兼容 harness 传参差异：subtasks 可能是对象数组，也可能是 JSON 字符串
+              const subtasks: any =
+                typeof args.subtasks === 'string' ? JSON.parse(args.subtasks) : args.subtasks
               const task = await orchestrator.dispatch({
                 title: args.title,
                 objective: args.objective,
-                subtasks: args.subtasks,
+                subtasks,
               })
               return JSON.stringify(
                 {
@@ -320,5 +329,156 @@ export function registerOrchestratorTools(
         })
       ),
     '@dsh-external/dsh-remote-orchestrator: evaluate_task tool'
+  )
+
+  // 6. SSH 连接资源管理工具
+  ctx.effect(
+    () =>
+      ctx.tools.register(
+        defineTool({
+          name: 'dsh_ssh_resource_manage',
+          description:
+            'SSH 连接资源管理：记录可连接的 SSH 账号与凭据（密码/私钥），按连接方式+主机 IP 增删改查。' +
+            'list 脱敏列表；get 按 id/name 取完整凭据供连接使用；upsert 添加或修改；delete 删除；' +
+            'test 用已存凭据做真实 SSH 连接测试；exec 直接在远程主机执行命令（免手工传密钥）。',
+          parameters: {
+            action: {
+              type: 'string',
+              description:
+                '操作类型: list(列出,脱敏) / get(取完整凭据) / upsert(添加或更新) / delete(删除) / test(连接测试) / exec(远程执行命令)',
+            },
+            resource: {
+              type: 'json',
+              description:
+                'SSH 资源对象（upsert 用）：{ id?, name, host, port?, authType: "password"|"key", username, password?, privateKey?, passphrase?, description?, tags? }',
+            },
+            resourceId: {
+              type: 'string',
+              description: 'SSH 资源 ID（get/delete/test/exec 用；exec/test 也接受 name）',
+            },
+            name: {
+              type: 'string',
+              description: 'SSH 资源名称（get/test/exec 可用名称代替 resourceId）',
+            },
+            query: {
+              type: 'string',
+              description: 'list 的过滤关键字（匹配 id/name/host/username/tags/description）',
+            },
+            command: {
+              type: 'string',
+              description: 'exec 操作要在远程主机执行的 shell 命令',
+            },
+            timeoutMs: {
+              type: 'string',
+              description: 'test/exec 超时毫秒数（默认 test 8000 / exec 30000）',
+            },
+          },
+          output: {
+            schema: { type: 'string' },
+            render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+          },
+          async execute(args: any) {
+            const action = args.action || 'list'
+            const findResource = (): SshResource | undefined => {
+              if (args.resourceId) return sshStore.get(args.resourceId)
+              if (args.name) {
+                // 先按名称精确匹配，再回退按 id 匹配（容错 AI 传 id 到 name 参数）
+                return sshStore.getByName(args.name) ?? sshStore.get(args.name)
+              }
+              return undefined
+            }
+
+            if (action === 'list') {
+              const keyword = String(args.query || '').toLowerCase()
+              const list = sshStore
+                .list()
+                .map(maskSshResource)
+                .filter((r: any) =>
+                  keyword
+                    ? [r.id, r.name, r.host, r.username, r.authType, r.description || '', ...(r.tags || [])]
+                        .join(' ')
+                        .toLowerCase()
+                        .includes(keyword)
+                    : true
+                )
+              return JSON.stringify(
+                {
+                  ok: true,
+                  count: list.length,
+                  note: '凭据已脱敏；需要明文密码/私钥时用 action=get 按 id 或 name 获取',
+                  resources: list,
+                },
+                null,
+                2
+              )
+            }
+
+            if (action === 'get') {
+              const r = findResource()
+              if (!r) return JSON.stringify({ ok: false, error: '未找到指定 SSH 资源（提供 resourceId 或 name）' })
+              return JSON.stringify({ ok: true, resource: r }, null, 2)
+            }
+
+            if (action === 'upsert') {
+              if (!args.resource) return JSON.stringify({ ok: false, error: '缺少 resource 对象' })
+              try {
+                // 兼容 harness 传参差异：resource 可能是对象，也可能是 JSON 字符串
+                const input: any = typeof args.resource === 'string' ? JSON.parse(args.resource) : args.resource
+                const existing = input.id ? sshStore.get(input.id) : undefined
+                const normalized = normalizeSshResource(input, existing)
+                const saved = sshStore.upsert(normalized)
+                return JSON.stringify(
+                  { ok: true, message: 'SSH 连接资源已保存', resource: maskSshResource(saved) },
+                  null,
+                  2
+                )
+              } catch (err: any) {
+                return JSON.stringify({ ok: false, error: err.message })
+              }
+            }
+
+            if (action === 'delete') {
+              const r = findResource()
+              if (!r) return JSON.stringify({ ok: false, error: '未找到指定 SSH 资源' })
+              const deleted = sshStore.delete(r.id)
+              return JSON.stringify({ ok: true, deleted, id: r.id, name: r.name })
+            }
+
+            if (action === 'test') {
+              const r = findResource()
+              if (!r) return JSON.stringify({ ok: false, error: '未找到指定 SSH 资源' })
+              const timeout = Number(args.timeoutMs) || 8000
+              const result = await testSshResource(r, timeout)
+              sshStore.update(r.id, {
+                lastTestedAt: result.testedAt,
+                lastTestOk: result.ok,
+                lastTestError: result.ok ? undefined : result.error,
+              })
+              return JSON.stringify(
+                {
+                  ok: true,
+                  name: r.name,
+                  test: result,
+                  hint: result.degraded ? '环境缺少 ssh2，仅完成 TCP 端口探测' : undefined,
+                },
+                null,
+                2
+              )
+            }
+
+            if (action === 'exec') {
+              const r = findResource()
+              if (!r) return JSON.stringify({ ok: false, error: '未找到指定 SSH 资源' })
+              if (!args.command) return JSON.stringify({ ok: false, error: '缺少 command' })
+              const timeout = Number(args.timeoutMs) || 30000
+              const result = await execOnSshResource(r, String(args.command), timeout)
+              return JSON.stringify({ ok: true, name: r.name, exec: result }, null, 2)
+            }
+
+            return JSON.stringify({ ok: false, error: `不支持的 action: ${action}` })
+          },
+        })
+      ),
+    '@dsh-external/dsh-remote-orchestrator: ssh_resource_manage tool'
   )
 }

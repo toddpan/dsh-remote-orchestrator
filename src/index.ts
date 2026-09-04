@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-tools'
 
 import { OrchestratorStore } from './store.js'
+import { SshResourceStore } from './ssh-store.js'
 import { TaskOrchestrator } from './orchestrator.js'
 import { OrchestratorRouter } from './router.js'
 import { registerOrchestratorTools } from './tools.js'
@@ -30,8 +31,9 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: Context, config: Config): void {
   const prefix = config.pathPrefix || '/dsh-orchestrator'
   const store = new OrchestratorStore(config.storagePath || undefined)
+  const sshStore = new SshResourceStore()
   const orchestrator = new TaskOrchestrator(ctx, store)
-  const router = new OrchestratorRouter(store, orchestrator)
+  const router = new OrchestratorRouter(store, orchestrator, sshStore)
 
   // 1. 注册 HTTP 路由（包含 Web 控制台与 REST API）
   ctx.effect(() => {
@@ -50,7 +52,7 @@ export function apply(ctx: Context, config: Config): void {
   }, '@dsh-external/dsh-remote-orchestrator: webServer route')
 
   // 2. 注册模型 Tools 给会话 Agent
-  registerOrchestratorTools(ctx, store, orchestrator, { pathPrefix: prefix })
+  registerOrchestratorTools(ctx, store, orchestrator, sshStore, { pathPrefix: prefix })
 
   const webServer = ctx.get('webServer') as any
   const port = webServer?.port || 3080

@@ -4,18 +4,22 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { OrchestratorStore } from './store.js'
+import type { SshResourceStore } from './ssh-store.js'
 import type { TaskOrchestrator } from './orchestrator.js'
 import { RemoteDshClient } from './remote-client.js'
+import { SshInputError, execOnSshResource, maskSshResource, normalizeSshResource, testSshResource } from './ssh-resources.js'
 import { renderWebUi } from './web-ui.js'
 
 export class OrchestratorRouter {
   private store: OrchestratorStore
+  private sshStore: SshResourceStore
   private orchestrator: TaskOrchestrator
   private client: RemoteDshClient
 
-  constructor(store: OrchestratorStore, orchestrator: TaskOrchestrator) {
+  constructor(store: OrchestratorStore, orchestrator: TaskOrchestrator, sshStore: SshResourceStore) {
     this.store = store
     this.orchestrator = orchestrator
+    this.sshStore = sshStore
     this.client = new RemoteDshClient()
   }
 
@@ -285,6 +289,66 @@ export class OrchestratorRouter {
       }
       const followRes = await this.orchestrator.sendFollowupToSubtask(taskId, subtaskId, body.message)
       this.sendJson(res, 200, followRes)
+      return true
+    }
+
+    // 4. SSH 连接资源 CRUD 路由
+    if (relPath === '/api/ssh-resources') {
+      if (method === 'GET') {
+        this.sendJson(res, 200, { ok: true, data: this.sshStore.list().map(maskSshResource) })
+        return true
+      }
+      if (method === 'POST') {
+        const body = await this.parseBody(req)
+        try {
+          const existing = body.id ? this.sshStore.get(body.id) : undefined
+          const normalized = normalizeSshResource(body, existing)
+          const saved = this.sshStore.upsert(normalized)
+          this.sendJson(res, 200, { ok: true, data: maskSshResource(saved) })
+        } catch (err: any) {
+          this.sendJson(res, 400, { ok: false, error: err.message })
+        }
+        return true
+      }
+    }
+
+    // 单个 SSH 资源：取完整凭据（编辑表单用）与删除
+    const sshMatch = /^\/api\/ssh-resources\/([^\/]+)$/.exec(relPath)
+    if (sshMatch) {
+      const sshId = decodeURIComponent(sshMatch[1])
+      if (method === 'GET') {
+        const r = this.sshStore.get(sshId)
+        if (!r) {
+          this.sendJson(res, 404, { ok: false, error: 'SSH resource not found' })
+          return true
+        }
+        this.sendJson(res, 200, { ok: true, data: r })
+        return true
+      }
+      if (method === 'DELETE') {
+        const success = this.sshStore.delete(sshId)
+        this.sendJson(res, 200, { ok: true, data: { deleted: success, sshId } })
+        return true
+      }
+    }
+
+    // SSH 资源连接测试（真实 SSH 认证握手）
+    const sshTestMatch = /^\/api\/ssh-resources\/([^\/]+)\/test$/.exec(relPath)
+    if (sshTestMatch && method === 'POST') {
+      const sshId = decodeURIComponent(sshTestMatch[1])
+      const r = this.sshStore.get(sshId)
+      if (!r) {
+        this.sendJson(res, 404, { ok: false, error: 'SSH resource not found' })
+        return true
+      }
+      const body = await this.parseBody(req)
+      const result = await testSshResource(r, Number(body?.timeoutMs) || 8000)
+      this.sshStore.update(r.id, {
+        lastTestedAt: result.testedAt,
+        lastTestOk: result.ok,
+        lastTestError: result.ok ? undefined : result.error,
+      })
+      this.sendJson(res, 200, { ok: true, data: result })
       return true
     }
 
